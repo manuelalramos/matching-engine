@@ -82,6 +82,12 @@ class MatchingEngine:
 
         return trades
 
+    def cancel_order(self, order_id: str) -> bool:
+        if order_id not in self.orders:
+            return False
+        del self.orders[order_id]
+        return True
+
     def render_book(self, show_ids: bool = False) -> str:
         def labels(side: str) -> list[str]:
             rows = []

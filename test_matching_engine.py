@@ -47,6 +47,12 @@ class MatchingEngineTest(unittest.TestCase):
         self.assertEqual(order.qty, 50)
         self.assertEqual(self.engine.book_orders("sell")[0].price, Decimal("12"))
 
+    def test_cancel_removes_order_and_reports_missing_id(self) -> None:
+        order, _ = self.engine.add_limit_order("buy", Decimal("10"), 100)
+        self.assertTrue(self.engine.cancel_order(order.id))
+        self.assertFalse(self.engine.cancel_order(order.id))
+        self.assertEqual(self.engine.book_orders("buy"), [])
+
 
 if __name__ == "__main__":
     unittest.main()
