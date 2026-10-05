@@ -11,6 +11,12 @@ class Order:
     sequence: int
 
 
+@dataclass
+class Trade:
+    price: Decimal
+    qty: int
+
+
 class MatchingEngine:
     def __init__(self) -> None:
         self.orders: dict[str, Order] = {}
@@ -32,12 +38,49 @@ class MatchingEngine:
             return sorted(orders, key=lambda order: (-order.price, order.sequence))
         return sorted(orders, key=lambda order: (order.price, order.sequence))
 
-    def add_limit_order(self, side: str, price: Decimal, qty: int) -> Order:
+    def add_limit_order(self, side: str, price: Decimal, qty: int) -> tuple[Order | None, list[Trade]]:
         validate_side_qty(side, qty)
         validate_price(price)
         order = self._new_order(side, price, qty)
-        self.orders[order.id] = order
-        return order
+        trades = self._match(order)
+        if order.qty > 0:
+            self.orders[order.id] = order
+        return (order if order.qty > 0 else None), trades
+
+    def add_market_order(self, side: str, qty: int) -> list[Trade]:
+        validate_side_qty(side, qty)
+        order = self._new_order(side, None, qty)
+        trades = self._match(order)
+        return trades
+
+    def _match(self, incoming: Order) -> list[Trade]:
+        trades = []
+        opposite = "sell" if incoming.side == "buy" else "buy"
+
+        while incoming.qty > 0:
+            candidates = self.book_orders(opposite)
+            if not candidates:
+                break
+            resting = candidates[0]
+            if incoming.price is not None:
+                if incoming.side == "buy" and incoming.price < resting.price:
+                    break
+                if incoming.side == "sell" and incoming.price > resting.price:
+                    break
+
+            trade_price = resting.price
+            trade_qty = min(incoming.qty, resting.qty)
+            incoming.qty -= trade_qty
+            resting.qty -= trade_qty
+            if trades and trades[-1].price == trade_price:
+                trades[-1].qty += trade_qty
+            else:
+                trades.append(Trade(trade_price, trade_qty))
+
+            if resting.qty == 0:
+                del self.orders[resting.id]
+
+        return trades
 
     def render_book(self, show_ids: bool = False) -> str:
         def labels(side: str) -> list[str]:
