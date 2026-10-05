@@ -1,7 +1,7 @@
 from decimal import Decimal
 import unittest
 
-from matching_engine import MatchingEngine
+from matching_engine import MatchingEngine, execute_command
 
 
 class MatchingEngineTest(unittest.TestCase):
@@ -157,6 +157,30 @@ class MatchingEngineTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.engine.add_pegged_order("bid", "sell", 100)
         self.assertEqual(self.engine.orders, {})
+
+    def test_cli_reproduces_challenge(self) -> None:
+        self.assertEqual(execute_command(self.engine, "limit buy 10 100"), ["Order created: buy 100 @ 10 order_1"])
+        execute_command(self.engine, "limit sell 20 100")
+        execute_command(self.engine, "limit sell 20 200")
+        self.assertEqual(execute_command(self.engine, "market buy 150"), ["Trade, price: 20, qty: 150"])
+        self.assertEqual(execute_command(self.engine, "market buy 200"), ["Trade, price: 20, qty: 150"])
+        self.assertEqual(execute_command(self.engine, "market sell 200"), ["Trade, price: 10, qty: 100"])
+
+    def test_cli_book_ids_cancel_and_amend(self) -> None:
+        execute_command(self.engine, "limit buy 10 100")
+        self.assertIn("order_1", execute_command(self.engine, "book ids")[0])
+        self.assertEqual(execute_command(self.engine, "amend order order_1 price 9.98 qty 80"), ["Order amended: buy 80 @ 9.98 order_1"])
+        self.assertEqual(execute_command(self.engine, "cancel order order_1"), ["Order cancelled"])
+        self.assertEqual(execute_command(self.engine, "cancel order_1"), ["Order not found"])
+
+    def test_cli_rejects_malformed_commands_without_mutating_book(self) -> None:
+        for command in ["book other", "limit buy ten 10", "market buy 1.5", "amend order_1 qty 10 qty 20", "cancel", "exit extra"]:
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                execute_command(self.engine, command)
+        self.assertEqual(self.engine.orders, {})
+        self.assertEqual(execute_command(self.engine, "  "), [])
+        with self.assertRaises(EOFError):
+            execute_command(self.engine, "exit")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 
 @dataclass
@@ -200,6 +200,95 @@ def validate_price(price: Decimal) -> None:
         raise ValueError("Price must be a positive finite Decimal")
 
 
+def parse_price(raw: str) -> Decimal:
+    try:
+        price = Decimal(raw)
+    except InvalidOperation as error:
+        raise ValueError("Invalid price") from error
+    validate_price(price)
+    return price
+
+
 def format_price(price: Decimal) -> str:
     text = format(price, "f")
     return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def order_message(prefix: str, order: Order) -> str:
+    price = f"@ {format_price(order.price)}" if order.price is not None else "waiting reference"
+    peg = f" peg {order.peg_reference}" if order.peg_reference else ""
+    return f"{prefix}: {order.side} {order.qty}{peg} {price} {order.id}"
+
+
+def execute_command(engine: MatchingEngine, command: str) -> list[str]:
+    parts = command.lower().split()
+    if not parts:
+        return []
+    if parts in [["exit"], ["quit"]]:
+        raise EOFError
+    if parts == ["help"]:
+        return [
+            "limit <buy|sell> <price> <qty>",
+            "market <buy|sell> <qty>",
+            "peg bid buy <qty> | peg offer sell <qty>",
+            "cancel [order] <id>",
+            "amend [order] <id> [price <price>] [qty <qty>]",
+            "book | book ids | print book | exit",
+        ]
+    if parts in [["book"], ["print", "book"], ["book", "ids"]]:
+        return [engine.render_book(show_ids=parts == ["book", "ids"])]
+
+    verb = parts[0]
+    order = None
+    trades = []
+    prefix = "Order created"
+    if verb == "limit" and len(parts) == 4:
+        order, trades = engine.add_limit_order(parts[1], parse_price(parts[2]), int(parts[3]))
+    elif verb == "market" and len(parts) == 3:
+        trades = engine.add_market_order(parts[1], int(parts[2]))
+    elif verb == "peg" and len(parts) == 4:
+        order = engine.add_pegged_order(parts[1], parts[2], int(parts[3]))
+    elif verb == "cancel":
+        args = parts[2:] if parts[1:2] == ["order"] else parts[1:]
+        if len(args) != 1:
+            raise ValueError("Usage: cancel [order] <id>")
+        return ["Order cancelled" if engine.cancel_order(args[0]) else "Order not found"]
+    elif verb == "amend":
+        args = parts[2:] if parts[1:2] == ["order"] else parts[1:]
+        if len(args) not in {3, 5}:
+            raise ValueError("Usage: amend [order] <id> [price <price>] [qty <qty>]")
+        updates = {}
+        for index in range(1, len(args), 2):
+            field, value = args[index], args[index + 1]
+            if field not in {"price", "qty"} or field in updates:
+                raise ValueError("Use price and/or qty once each")
+            updates[field] = parse_price(value) if field == "price" else int(value)
+        order, trades = engine.amend_order(args[0], **updates)
+        prefix = "Order amended"
+    else:
+        raise ValueError("Invalid command. Type help for commands")
+
+    lines = [f"Trade, price: {format_price(trade.price)}, qty: {trade.qty}" for trade in trades]
+    if order is not None:
+        lines.append(order_message(prefix, order))
+    elif verb == "amend":
+        lines.append("Order amended and fully filled")
+    return lines or ["No trades"]
+
+
+def main() -> None:
+    engine = MatchingEngine()
+    print("Matching Engine ready. Type 'help' for commands.")
+    while True:
+        try:
+            for line in execute_command(engine, input(">>> ")):
+                print(line)
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        except ValueError as error:
+            print(f"Error: {error}")
+
+
+if __name__ == "__main__":
+    main()
