@@ -53,6 +53,46 @@ class MatchingEngineTest(unittest.TestCase):
         self.assertFalse(self.engine.cancel_order(order.id))
         self.assertEqual(self.engine.book_orders("buy"), [])
 
+    def test_price_amend_moves_level_and_loses_priority(self) -> None:
+        first, _ = self.engine.add_limit_order("buy", Decimal("10"), 200)
+        second, _ = self.engine.add_limit_order("buy", Decimal("9.99"), 100)
+        third, _ = self.engine.add_limit_order("buy", Decimal("9.98"), 50)
+        self.engine.amend_order(first.id, price=Decimal("9.98"))
+        self.assertEqual(self.engine.book_orders("buy"), [second, third, first])
+
+    def test_quantity_increase_loses_priority(self) -> None:
+        first, _ = self.engine.add_limit_order("buy", Decimal("10"), 100)
+        second, _ = self.engine.add_limit_order("buy", Decimal("10"), 100)
+        self.engine.amend_order(first.id, qty=150)
+        self.engine.add_market_order("sell", 100)
+        self.assertNotIn(second.id, self.engine.orders)
+        self.assertEqual(first.qty, 150)
+
+    def test_quantity_decrease_keeps_priority_and_means_remaining_qty(self) -> None:
+        first, _ = self.engine.add_limit_order("buy", Decimal("10"), 100)
+        second, _ = self.engine.add_limit_order("buy", Decimal("10"), 100)
+        self.engine.add_market_order("sell", 20)
+        self.engine.amend_order(first.id, qty=60)
+        self.engine.add_market_order("sell", 60)
+        self.assertNotIn(first.id, self.engine.orders)
+        self.assertEqual(second.qty, 100)
+
+    def test_amend_can_cross_and_fully_fill(self) -> None:
+        buy, _ = self.engine.add_limit_order("buy", Decimal("9"), 100)
+        self.engine.add_limit_order("sell", Decimal("10"), 100)
+        order, trades = self.engine.amend_order(buy.id, price=Decimal("10"))
+        self.assertIsNone(order)
+        self.assertEqual([(t.price, t.qty) for t in trades], [(Decimal("10"), 100)])
+        self.assertEqual(self.engine.orders, {})
+
+    def test_invalid_amend_does_not_change_order(self) -> None:
+        order, _ = self.engine.add_limit_order("buy", Decimal("10"), 100)
+        with self.assertRaises(ValueError):
+            self.engine.amend_order(order.id, price=Decimal("11"), qty=0)
+        self.assertEqual((order.price, order.qty), (Decimal("10"), 100))
+        with self.assertRaises(ValueError):
+            self.engine.amend_order("missing", qty=10)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -88,6 +88,37 @@ class MatchingEngine:
         del self.orders[order_id]
         return True
 
+    def amend_order(
+        self, order_id: str, *, price: Decimal | None = None, qty: int | None = None
+    ) -> tuple[Order | None, list[Trade]]:
+        if order_id not in self.orders:
+            raise ValueError("Order not found")
+        if price is None and qty is None:
+            raise ValueError("Provide price, qty, or both")
+
+        order = self.orders[order_id]
+        if price is not None:
+            validate_price(price)
+        if qty is not None:
+            validate_side_qty(order.side, qty)
+
+        loses_priority = (price is not None and price != order.price) or (
+            qty is not None and qty > order.qty
+        )
+        if loses_priority:
+            order.sequence = self.next_sequence
+            self.next_sequence += 1
+        if price is not None:
+            order.price = price
+        if qty is not None:
+            order.qty = qty
+
+        del self.orders[order_id]
+        trades = self._match(order)
+        if order.qty > 0:
+            self.orders[order_id] = order
+        return (order if order.qty > 0 else None), trades
+
     def render_book(self, show_ids: bool = False) -> str:
         def labels(side: str) -> list[str]:
             rows = []
