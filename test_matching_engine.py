@@ -93,6 +93,71 @@ class MatchingEngineTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.engine.amend_order("missing", qty=10)
 
+    def test_peg_bid_follows_reference_and_keeps_original_priority(self) -> None:
+        first, _ = self.engine.add_limit_order("buy", Decimal("10"), 200)
+        lower, _ = self.engine.add_limit_order("buy", Decimal("9.99"), 100)
+        peg = self.engine.add_pegged_order("bid", "buy", 150)
+        self.assertEqual(self.engine.book_orders("buy"), [first, peg, lower])
+        better, _ = self.engine.add_limit_order("buy", Decimal("10.1"), 300)
+        self.assertEqual(self.engine.book_orders("buy"), [peg, better, first, lower])
+        self.assertEqual(peg.price, Decimal("10.1"))
+
+    def test_peg_offer_moves_when_reference_is_cancelled(self) -> None:
+        best, _ = self.engine.add_limit_order("sell", Decimal("10.5"), 100)
+        self.engine.add_limit_order("sell", Decimal("11"), 100)
+        peg = self.engine.add_pegged_order("offer", "sell", 50)
+        self.assertEqual(peg.price, Decimal("10.5"))
+        self.engine.cancel_order(best.id)
+        self.assertEqual(peg.price, Decimal("11"))
+
+    def test_waiting_peg_can_be_amended_cancelled_and_reactivated(self) -> None:
+        self.engine.add_limit_order("sell", Decimal("20"), 100)
+        peg = self.engine.add_pegged_order("bid", "buy", 150)
+        order, trades = self.engine.amend_order(peg.id, qty=200)
+        self.assertIsNone(order.price)
+        self.assertEqual(trades, [])
+        self.assertEqual(self.engine.book_orders("sell")[0].qty, 100)
+        self.assertIn(f"Waiting reference: {peg.id}", self.engine.render_book())
+        self.engine.add_limit_order("buy", Decimal("10"), 100)
+        self.assertEqual(peg.price, Decimal("10"))
+        self.assertTrue(self.engine.cancel_order(peg.id))
+
+    def test_reference_updates_between_fills(self) -> None:
+        self.engine.add_limit_order("buy", Decimal("10"), 100)
+        self.engine.add_limit_order("buy", Decimal("9"), 100)
+        peg = self.engine.add_pegged_order("bid", "buy", 50)
+        trades = self.engine.add_market_order("sell", 120)
+        self.assertEqual([(t.price, t.qty) for t in trades], [(Decimal("10"), 100), (Decimal("9"), 20)])
+        self.assertEqual((peg.price, peg.qty), (Decimal("9"), 50))
+
+    def test_last_regular_reference_disappears_after_fill(self) -> None:
+        self.engine.add_limit_order("buy", Decimal("10"), 100)
+        peg = self.engine.add_pegged_order("bid", "buy", 50)
+        trades = self.engine.add_market_order("sell", 200)
+        self.assertEqual([(t.price, t.qty) for t in trades], [(Decimal("10"), 100)])
+        self.assertIsNone(peg.price)
+        self.assertEqual(peg.qty, 50)
+
+    def test_explicit_price_converts_peg_to_regular_limit(self) -> None:
+        peg = self.engine.add_pegged_order("bid", "buy", 50)
+        self.engine.amend_order(peg.id, price=Decimal("9"))
+        self.engine.add_limit_order("buy", Decimal("10"), 100)
+        self.assertIsNone(peg.peg_reference)
+        self.assertEqual(peg.price, Decimal("9"))
+
+    def test_validation_rejects_invalid_side_qty_price_and_peg(self) -> None:
+        for qty in [0, -1, 1.5, True]:
+            with self.subTest(qty=qty), self.assertRaises(ValueError):
+                self.engine.add_market_order("buy", qty)
+        for price in [Decimal("0"), Decimal("-1"), Decimal("NaN"), Decimal("Infinity")]:
+            with self.subTest(price=price), self.assertRaises(ValueError):
+                self.engine.add_limit_order("buy", price, 100)
+        with self.assertRaises(ValueError):
+            self.engine.add_limit_order("other", Decimal("10"), 100)
+        with self.assertRaises(ValueError):
+            self.engine.add_pegged_order("bid", "sell", 100)
+        self.assertEqual(self.engine.orders, {})
+
 
 if __name__ == "__main__":
     unittest.main()

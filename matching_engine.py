@@ -9,6 +9,7 @@ class Order:
     price: Decimal | None
     qty: int
     sequence: int
+    peg_reference: str | None = None
 
 
 @dataclass
@@ -45,12 +46,14 @@ class MatchingEngine:
         trades = self._match(order)
         if order.qty > 0:
             self.orders[order.id] = order
+        self._refresh_pegged_orders()
         return (order if order.qty > 0 else None), trades
 
     def add_market_order(self, side: str, qty: int) -> list[Trade]:
         validate_side_qty(side, qty)
         order = self._new_order(side, None, qty)
         trades = self._match(order)
+        self._refresh_pegged_orders()
         return trades
 
     def _match(self, incoming: Order) -> list[Trade]:
@@ -79,6 +82,7 @@ class MatchingEngine:
 
             if resting.qty == 0:
                 del self.orders[resting.id]
+            self._refresh_pegged_orders()
 
         return trades
 
@@ -86,6 +90,7 @@ class MatchingEngine:
         if order_id not in self.orders:
             return False
         del self.orders[order_id]
+        self._refresh_pegged_orders()
         return True
 
     def amend_order(
@@ -110,14 +115,50 @@ class MatchingEngine:
             self.next_sequence += 1
         if price is not None:
             order.price = price
+            order.peg_reference = None
         if qty is not None:
             order.qty = qty
+
+        # A pegged order without a reference must not behave like a market order.
+        if order.peg_reference is not None:
+            self._refresh_pegged_orders()
+            return order, []
 
         del self.orders[order_id]
         trades = self._match(order)
         if order.qty > 0:
             self.orders[order_id] = order
+        self._refresh_pegged_orders()
         return (order if order.qty > 0 else None), trades
+
+    def add_pegged_order(self, reference: str, side: str, qty: int) -> Order:
+        validate_side_qty(side, qty)
+        if (reference, side) not in {("bid", "buy"), ("offer", "sell")}:
+            raise ValueError("Use peg bid buy or peg offer sell")
+        order = self._new_order(side, None, qty)
+        order.peg_reference = reference
+        self.orders[order.id] = order
+        self._refresh_pegged_orders()
+        return order
+
+    def _refresh_pegged_orders(self) -> None:
+        # Only regular limit orders provide a reference, avoiding circular prices.
+        buy_prices = []
+        sell_prices = []
+        for order in self.orders.values():
+            if order.peg_reference is None and order.price is not None:
+                if order.side == "buy":
+                    buy_prices.append(order.price)
+                else:
+                    sell_prices.append(order.price)
+
+        bid = max(buy_prices) if buy_prices else None
+        offer = min(sell_prices) if sell_prices else None
+        for order in self.orders.values():
+            if order.peg_reference == "bid":
+                order.price = bid
+            elif order.peg_reference == "offer":
+                order.price = offer
 
     def render_book(self, show_ids: bool = False) -> str:
         def labels(side: str) -> list[str]:
@@ -141,6 +182,9 @@ class MatchingEngine:
             sell = sells[index] if index < len(sells) else ""
             lines.append(f"{buy:<{width}} | {sell}")
 
+        waiting = [order for order in self.orders.values() if order.price is None]
+        for order in sorted(waiting, key=lambda item: item.sequence):
+            lines.append(f"Waiting reference: {order.id} peg {order.peg_reference} {order.side} {order.qty}")
         return "\n".join(lines)
 
 
